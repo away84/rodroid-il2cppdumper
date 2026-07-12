@@ -225,7 +225,6 @@ impl StaticFieldCatalog {
                         continue;
                     }
 
-                    // Blobs only for FieldRVA when explicitly enabled — keeps JSON small.
                     let (hex, base64, ascii, hex_dump) = if config.dump_field_rva_data
                         && layout.kind == StaticFieldKind::FieldRva
                     {
@@ -360,8 +359,8 @@ impl StaticFieldExporter {
 pub fn write_dump_cs_field_annotations(
     buf: &mut String,
     executor: &mut Il2CppExecutor,
-    metadata: &mut Metadata,
-    il2cpp: &mut Il2Cpp,
+    metadata: &Metadata,
+    il2cpp: &Il2Cpp,
     config: &Config,
     type_def: &Il2CppTypeDefinition,
     type_def_index: usize,
@@ -397,8 +396,6 @@ pub fn write_dump_cs_field_annotations(
     );
     let field_name = metadata.get_string_from_index(field_def.name_index)?;
     let field_path = format!("{type_name}.{field_name}");
-
-    // [ThreadStatic] comes from metadata when dump_attribute is on — never duplicate it here.
 
     if layout.has_field_rva || layout.kind == StaticFieldKind::FieldRva {
         writeln!(buf, "{indent}\t// FieldRVA: {field_path}").ok();

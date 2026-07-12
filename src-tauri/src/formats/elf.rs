@@ -415,6 +415,17 @@ impl Elf {
             let bloom_word_size = if self.is_32bit { 4u64 } else { 8 };
             let buckets_address = addr + 16 + (bloom_word_size * bloom_size as u64);
 
+            let max_buckets = self.stream.remaining_from(buckets_address) / 4;
+            if nbuckets as u64 > max_buckets || nbuckets as u64 > crate::io::MAX_BINARY_ARRAY_ELEMS as u64 {
+                return Err(Error::InvalidArraySize {
+                    count: nbuckets as u64,
+                    elem_size: 4,
+                    context: format!(
+                        "DT_GNU_HASH nbuckets invalid (max from remaining={max_buckets})"
+                    ),
+                });
+            }
+
             self.stream.set_position(buckets_address);
             let mut buckets = Vec::with_capacity(nbuckets as usize);
             for _ in 0..nbuckets {
@@ -775,6 +786,17 @@ impl Elf {
         if addr == 0 || count == 0 {
             return Ok(Vec::new());
         }
+        let elem = self.stream.pointer_size() as u64;
+        let max_by_file = self.stream.len() / elem.max(1);
+        if count > max_by_file || count > crate::io::MAX_BINARY_ARRAY_ELEMS as u64 {
+            return Err(Error::InvalidArraySize {
+                count,
+                elem_size: elem as usize,
+                context: format!(
+                    "map_vatr_array: count looks invalid (addr=0x{addr:x}, max_by_file={max_by_file})"
+                ),
+            });
+        }
         let offset = self.map_vatr(addr)?;
         self.stream.read_ptr_array(offset, count as usize)
     }
@@ -782,6 +804,16 @@ impl Elf {
     pub fn map_vatr_u32_array(&mut self, addr: u64, count: u64) -> Result<Vec<u32>> {
         if addr == 0 || count == 0 {
             return Ok(Vec::new());
+        }
+        let max_by_file = self.stream.len() / 4;
+        if count > max_by_file || count > crate::io::MAX_BINARY_ARRAY_ELEMS as u64 {
+            return Err(Error::InvalidArraySize {
+                count,
+                elem_size: 4,
+                context: format!(
+                    "map_vatr_u32_array: count looks invalid (addr=0x{addr:x}, max_by_file={max_by_file})"
+                ),
+            });
         }
         let offset = self.map_vatr(addr)?;
         self.stream.read_u32_array(offset, count as usize)
@@ -1220,22 +1252,35 @@ impl Elf {
         if mr.type_definitions_sizes > 0 && mr.type_definitions_sizes_count > 0 {
             if self.codm_diag {
                 if let Ok(sizes_offset) = self.map_vatr(mr.type_definitions_sizes) {
-                    self.stream.set_position(sizes_offset);
-                    self.type_definition_sizes.clear();
-                    self.type_definition_sizes.reserve(mr.type_definitions_sizes_count as usize);
-                    for _ in 0..mr.type_definitions_sizes_count {
-                        match Il2CppTypeDefinitionSizes::read(&mut self.stream) {
-                            Ok(s) => self.type_definition_sizes.push(s),
-                            Err(_) => break,
+                    if let Ok(n) = crate::io::checked_array_len(
+                        mr.type_definitions_sizes_count,
+                        std::mem::size_of::<Il2CppTypeDefinitionSizes>().max(1),
+                        Some(self.stream.remaining_from(sizes_offset)),
+                        "type_definition_sizes(codm)",
+                    ) {
+                        self.stream.set_position(sizes_offset);
+                        self.type_definition_sizes.clear();
+                        self.type_definition_sizes.reserve(n);
+                        for _ in 0..n {
+                            match Il2CppTypeDefinitionSizes::read(&mut self.stream) {
+                                Ok(s) => self.type_definition_sizes.push(s),
+                                Err(_) => break,
+                            }
                         }
                     }
                 }
             } else {
                 let sizes_offset = self.map_vatr(mr.type_definitions_sizes)?;
+                let n = crate::io::checked_array_len(
+                    mr.type_definitions_sizes_count,
+                    std::mem::size_of::<Il2CppTypeDefinitionSizes>().max(1),
+                    Some(self.stream.remaining_from(sizes_offset)),
+                    "type_definition_sizes",
+                )?;
                 self.stream.set_position(sizes_offset);
                 self.type_definition_sizes.clear();
-                self.type_definition_sizes.reserve(mr.type_definitions_sizes_count as usize);
-                for _ in 0..mr.type_definitions_sizes_count {
+                self.type_definition_sizes.reserve(n);
+                for _ in 0..n {
                     self.type_definition_sizes.push(Il2CppTypeDefinitionSizes::read(&mut self.stream)?);
                 }
             }
@@ -1362,8 +1407,18 @@ impl Elf {
             let module_name = self.stream.read_string_to_null_at(name_offset)?;
 
             let method_ptrs = if module.method_pointer_count > 0 && module.method_pointers > 0 {
-                self.map_vatr_array(module.method_pointers, module.method_pointer_count as u64)
-                    .unwrap_or_else(|_| vec![0; module.method_pointer_count as usize])
+                match self.map_vatr_array(module.method_pointers, module.method_pointer_count as u64) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let n = module.method_pointer_count as u64;
+                        let max = self.stream.len() / self.stream.pointer_size() as u64;
+                        if n > 0 && n <= max && n <= crate::io::MAX_BINARY_ARRAY_ELEMS as u64 {
+                            vec![0u64; n as usize]
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                }
             } else {
                 Vec::new()
             };

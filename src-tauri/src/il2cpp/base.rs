@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use crate::io::BinaryStream;
+use crate::io::{checked_array_len, BinaryStream};
 use crate::error::{Result, Error};
 use crate::search::SearchSection;
 use crate::disassembler::Architecture;
@@ -337,16 +337,23 @@ impl Il2Cpp {
                                 Ok(v) => self.field_offset_pointers = v,
                                 Err(e) => eprintln!("[WARN] Failed to read field_offset_pointers: {e}"),
                             }
-                        } else {
+                        } else if let Ok(n) = checked_array_len(
+                            mr.field_offsets_count,
+                            4,
+                            Some(self.stream.remaining_from(fo_offset)),
+                            "field_offsets(raw)",
+                        ) {
                             self.stream.set_position(fo_offset);
-                            let mut raw = Vec::with_capacity(mr.field_offsets_count as usize);
-                            for _ in 0..mr.field_offsets_count {
+                            let mut raw = Vec::with_capacity(n);
+                            for _ in 0..n {
                                 match self.stream.read_i32() {
                                     Ok(v) => raw.push(v),
                                     Err(_) => break,
                                 }
                             }
                             self.field_offsets = vec![raw];
+                        } else {
+                            eprintln!("[WARN] field_offsets_count invalid: {}", mr.field_offsets_count);
                         }
                     },
                     Err(e) => eprintln!("[WARN] Failed to map field_offsets: {e}"),
@@ -355,13 +362,20 @@ impl Il2Cpp {
 
             if mr.type_definitions_sizes > 0 && mr.type_definitions_sizes_count > 0 {
                 if let Ok(sizes_offset) = map_vatr(mr.type_definitions_sizes) {
-                    self.stream.set_position(sizes_offset);
-                    self.type_definition_sizes.clear();
-                    self.type_definition_sizes.reserve(mr.type_definitions_sizes_count as usize);
-                    for _ in 0..mr.type_definitions_sizes_count {
-                        match Il2CppTypeDefinitionSizes::read(&mut self.stream) {
-                            Ok(s) => self.type_definition_sizes.push(s),
-                            Err(_) => break,
+                    if let Ok(n) = checked_array_len(
+                        mr.type_definitions_sizes_count,
+                        std::mem::size_of::<Il2CppTypeDefinitionSizes>().max(1),
+                        Some(self.stream.remaining_from(sizes_offset)),
+                        "type_definition_sizes",
+                    ) {
+                        self.stream.set_position(sizes_offset);
+                        self.type_definition_sizes.clear();
+                        self.type_definition_sizes.reserve(n);
+                        for _ in 0..n {
+                            match Il2CppTypeDefinitionSizes::read(&mut self.stream) {
+                                Ok(s) => self.type_definition_sizes.push(s),
+                                Err(_) => break,
+                            }
                         }
                     }
                 }
@@ -398,9 +412,15 @@ impl Il2Cpp {
                 if self.field_offsets_are_pointers {
                     self.field_offset_pointers = self.stream.read_ptr_array(fo_offset, mr.field_offsets_count as usize)?;
                 } else {
+                    let n = checked_array_len(
+                        mr.field_offsets_count,
+                        4,
+                        Some(self.stream.remaining_from(fo_offset)),
+                        "field_offsets(raw)",
+                    )?;
                     self.stream.set_position(fo_offset);
-                    let mut raw = Vec::with_capacity(mr.field_offsets_count as usize);
-                    for _ in 0..mr.field_offsets_count {
+                    let mut raw = Vec::with_capacity(n);
+                    for _ in 0..n {
                         raw.push(self.stream.read_i32()?);
                     }
                     self.field_offsets = vec![raw];
@@ -409,10 +429,16 @@ impl Il2Cpp {
 
             if mr.type_definitions_sizes > 0 && mr.type_definitions_sizes_count > 0 {
                 let sizes_offset = map_vatr(mr.type_definitions_sizes)?;
+                let n = checked_array_len(
+                    mr.type_definitions_sizes_count,
+                    std::mem::size_of::<Il2CppTypeDefinitionSizes>().max(1),
+                    Some(self.stream.remaining_from(sizes_offset)),
+                    "type_definition_sizes",
+                )?;
                 self.stream.set_position(sizes_offset);
                 self.type_definition_sizes.clear();
-                self.type_definition_sizes.reserve(mr.type_definitions_sizes_count as usize);
-                for _ in 0..mr.type_definitions_sizes_count {
+                self.type_definition_sizes.reserve(n);
+                for _ in 0..n {
                     self.type_definition_sizes.push(Il2CppTypeDefinitionSizes::read(&mut self.stream)?);
                 }
             }
@@ -476,8 +502,18 @@ impl Il2Cpp {
 
             let method_ptrs = if module.method_pointers > 0 && module.method_pointer_count > 0 {
                 let mp_offset = map_vatr(module.method_pointers)?;
-                self.stream.read_ptr_array(mp_offset, module.method_pointer_count as usize)
-                    .unwrap_or_else(|_| vec![0; module.method_pointer_count as usize])
+                match self.stream.read_ptr_array(mp_offset, module.method_pointer_count as usize) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let n = module.method_pointer_count as u64;
+                        let max = self.stream.len() / self.stream.pointer_size() as u64;
+                        if n > 0 && n <= max && n <= crate::io::MAX_BINARY_ARRAY_ELEMS as u64 {
+                            vec![0u64; n as usize]
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                }
             } else {
                 Vec::new()
             };
@@ -509,7 +545,7 @@ impl Il2Cpp {
     }
 
     pub fn get_raw_field_offset(
-        &mut self,
+        &self,
         type_def_index: usize,
         field_index_in_type: usize,
         field_index: usize,
@@ -527,11 +563,7 @@ impl Il2Cpp {
                 Ok(p) => p,
                 Err(_) => return -1,
             };
-            self.stream.set_position(read_pos);
-            match self.stream.read_i32() {
-                Ok(v) => v,
-                Err(_) => -1,
-            }
+            self.stream.peek_i32_at(read_pos).unwrap_or(-1)
         } else if !self.field_offsets.is_empty() {
             let flat = &self.field_offsets[0];
             if field_index < flat.len() {
@@ -545,7 +577,7 @@ impl Il2Cpp {
     }
 
     pub fn get_field_offset_from_index(
-        &mut self,
+        &self,
         type_def_index: usize,
         field_index_in_type: usize,
         field_index: usize,
@@ -565,6 +597,54 @@ impl Il2Cpp {
         }
 
         offset
+    }
+
+    pub fn peek_generic_class(&self, addr: u64) -> Result<Il2CppGenericClass> {
+        let offset = self.map_vatr(addr)?;
+        let mut r = self.stream.slice_reader_at(offset);
+        let type_definition_index;
+        let type_ptr;
+        if self.version >= 27.0 {
+            type_definition_index = 0;
+            type_ptr = r.read_ptr()?;
+        } else {
+            type_definition_index = r.read_ptr()?;
+            type_ptr = 0;
+        }
+        let class_inst = r.read_ptr()?;
+        let method_inst = r.read_ptr()?;
+        let cached_class = r.read_ptr()?;
+        Ok(Il2CppGenericClass {
+            type_definition_index,
+            type_ptr,
+            context: Il2CppGenericContext { class_inst, method_inst },
+            cached_class,
+        })
+    }
+
+    pub fn peek_generic_inst(&self, addr: u64) -> Result<Il2CppGenericInst> {
+        let offset = self.map_vatr(addr)?;
+        let mut r = self.stream.slice_reader_at(offset);
+        Ok(Il2CppGenericInst {
+            type_argc: r.read_ptr()?,
+            type_argv: r.read_ptr()?,
+        })
+    }
+
+    pub fn peek_ptr_array(&self, addr: u64, count: u64) -> Result<Vec<u64>> {
+        let offset = self.map_vatr(addr)?;
+        let mut r = self.stream.slice_reader_at(offset);
+        let n = crate::io::checked_array_len(
+            count,
+            self.stream.pointer_size(),
+            Some(self.stream.remaining_from(offset)),
+            "peek_ptr_array",
+        )?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            out.push(r.read_ptr()?);
+        }
+        Ok(out)
     }
 
     pub fn get_rva(&self, pointer: u64) -> u64 {
@@ -597,26 +677,16 @@ impl Il2Cpp {
         0
     }
 
-    pub fn read_generic_class(&mut self, addr: u64) -> Result<Il2CppGenericClass> {
-        let offset = self.map_vatr(addr)?;
-        self.stream.set_position(offset);
-        Il2CppGenericClass::read(&mut self.stream, self.version)
+    pub fn read_generic_class(&self, addr: u64) -> Result<Il2CppGenericClass> {
+        self.peek_generic_class(addr)
     }
 
-    pub fn read_generic_inst(&mut self, addr: u64) -> Result<Il2CppGenericInst> {
-        let offset = self.map_vatr(addr)?;
-        self.stream.set_position(offset);
-        Il2CppGenericInst::read(&mut self.stream)
+    pub fn read_generic_inst(&self, addr: u64) -> Result<Il2CppGenericInst> {
+        self.peek_generic_inst(addr)
     }
 
-    pub fn read_ptr_array(&mut self, addr: u64, count: u64) -> Result<Vec<u64>> {
-        let offset = self.map_vatr(addr)?;
-        self.stream.set_position(offset);
-        let mut result = Vec::with_capacity(count as usize);
-        for _ in 0..count {
-            result.push(self.stream.read_ptr()?);
-        }
-        Ok(result)
+    pub fn read_ptr_array(&self, addr: u64, count: u64) -> Result<Vec<u64>> {
+        self.peek_ptr_array(addr, count)
     }
 
     pub fn detect_architecture(&self) -> Architecture {
