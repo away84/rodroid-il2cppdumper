@@ -15,6 +15,13 @@ pub enum Error {
     #[error("Read out of bounds: offset 0x{offset:x}, size {size}")]
     OutOfBounds { offset: u64, size: usize },
 
+    #[error("Invalid array size: count={count}, element_size={elem_size} ({context})")]
+    InvalidArraySize {
+        count: u64,
+        elem_size: usize,
+        context: String,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
