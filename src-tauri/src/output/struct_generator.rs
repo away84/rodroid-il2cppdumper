@@ -1248,8 +1248,8 @@ impl StructGenerator {
         element_type: &Il2CppType,
         struct_name_dic: &HashMap<usize, String>,
         executor: &mut Il2CppExecutor,
-        metadata: &mut Metadata,
-        il2cpp: &mut Il2Cpp,
+        metadata: &Metadata,
+        il2cpp: &Il2Cpp,
         context: Option<&Il2CppGenericContext>,
     ) {
         let struct_name = Self::get_il2cpp_struct_name(element_type, struct_name_dic, il2cpp, context);
@@ -1293,12 +1293,12 @@ impl StructGenerator {
             }
         };
 
+        use rayon::prelude::*;
+
         let struct_name_dic = Self::build_struct_name_dic(executor, metadata, il2cpp);
         let type_def_image_names = Self::build_type_def_image_names(metadata);
 
-        let mut struct_info_list: Vec<StructInfo> = Vec::new();
-        let mut array_class_header = String::with_capacity(1 << 14);
-        let mut array_class_set: HashSet<String> = HashSet::new();
+        let mut array_classes: HashMap<String, String> = HashMap::new();
 
         // Build genericClassStructNameDic (C# lines 58-73)
         let mut generic_class_struct_name_dic: HashMap<u64, String> = HashMap::new();
@@ -1333,29 +1333,64 @@ impl StructGenerator {
             }
         }
 
+        // Parallel StructInfo for non-generic type definitions (map-reduce array class fragments).
         let type_defs = metadata.type_defs.clone();
-        for (type_index, type_def) in type_defs.iter().enumerate() {
-            let type_name = match struct_name_dic.get(&type_index) {
-                Some(n) => n.clone(),
-                None => continue,
-            };
+        let base_results: Vec<(Option<StructInfo>, HashMap<String, String>)> = type_defs
+            .par_iter()
+            .enumerate()
+            .map(|(type_index, type_def)| {
+                let type_name = match struct_name_dic.get(&type_index) {
+                    Some(n) => n.clone(),
+                    None => return (None, HashMap::new()),
+                };
 
-            let mut info = StructInfo {
-                type_name,
-                is_value_type: type_def.is_value_type(),
-                parent: None,
-                fields: Vec::new(),
-                static_fields: Vec::new(),
-                vtable_methods: Vec::new(),
-                rgctxs: Vec::new(),
-            };
+                let mut local_exec = Il2CppExecutor::new_for_worker(executor);
+                let mut info = StructInfo {
+                    type_name,
+                    is_value_type: type_def.is_value_type(),
+                    parent: None,
+                    fields: Vec::new(),
+                    static_fields: Vec::new(),
+                    vtable_methods: Vec::new(),
+                    rgctxs: Vec::new(),
+                };
+                let mut local_arrays = HashMap::new();
 
-            Self::add_parent(il2cpp, type_def, &struct_name_dic, metadata, &mut info);
-            Self::add_fields(executor, metadata, il2cpp, type_def, &struct_name_dic, &mut info, &mut array_class_header, &mut array_class_set, None, None);
-            Self::add_vtable_methods(metadata, il2cpp, type_def, &mut info);
-            Self::add_rgctx(executor, metadata, il2cpp, type_def, type_index, &type_def_image_names, &mut info);
+                Self::add_parent(il2cpp, type_def, &struct_name_dic, metadata, &mut info);
+                Self::add_fields(
+                    &mut local_exec,
+                    metadata,
+                    il2cpp,
+                    type_def,
+                    &struct_name_dic,
+                    &mut info,
+                    &mut local_arrays,
+                    None,
+                    None,
+                );
+                Self::add_vtable_methods(metadata, il2cpp, type_def, &mut info);
+                Self::add_rgctx(
+                    &mut local_exec,
+                    metadata,
+                    il2cpp,
+                    type_def,
+                    type_index,
+                    &type_def_image_names,
+                    &mut info,
+                );
 
-            struct_info_list.push(info);
+                (Some(info), local_arrays)
+            })
+            .collect();
+
+        let mut struct_info_list: Vec<StructInfo> = Vec::with_capacity(base_results.len());
+        for (info_opt, local_arrays) in base_results {
+            if let Some(info) = info_opt {
+                struct_info_list.push(info);
+            }
+            for (name, frag) in local_arrays {
+                array_classes.entry(name).or_insert(frag);
+            }
         }
 
         // Process generic class instances using fixpoint loop
@@ -1414,7 +1449,17 @@ impl StructGenerator {
                     method_inst: generic_class.context.method_inst,
                 };
                 Self::add_parent(il2cpp, &type_def, &struct_name_dic, metadata, &mut info);
-                Self::add_fields(executor, metadata, il2cpp, &type_def, &struct_name_dic, &mut info, &mut array_class_header, &mut array_class_set, Some(&context), Some(&mut hdr_ctx));
+                Self::add_fields(
+                    executor,
+                    metadata,
+                    il2cpp,
+                    &type_def,
+                    &struct_name_dic,
+                    &mut info,
+                    &mut array_classes,
+                    Some(&context),
+                    Some(&mut hdr_ctx),
+                );
                 Self::add_vtable_methods(metadata, il2cpp, &type_def, &mut info);
                 struct_info_list.push(info);
             }
@@ -1495,48 +1540,89 @@ impl StructGenerator {
             legacy_buf
         };
 
-        let mut method_info_header = String::with_capacity(1 << 16);
+        // Parallel MethodInfo header fragments (dedupe by generic method pointer, first wins).
+        let method_info_jobs: Vec<(usize, String)> = metadata
+            .image_defs
+            .iter()
+            .flat_map(|image_def| {
+                let image_name = metadata
+                    .get_string_from_index(image_def.name_index)
+                    .unwrap_or_default();
+                let type_end = image_def.type_start as usize + image_def.type_count as usize;
+                (image_def.type_start as usize..type_end)
+                    .map(|type_def_index| (type_def_index, image_name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
-        let mut method_info_cache: HashSet<u64> = HashSet::new();
-
-        let image_defs = metadata.image_defs.clone();
-        for image_def in &image_defs {
-            let image_name = metadata.get_string_from_index(image_def.name_index).unwrap_or_default();
-            let type_end = image_def.type_start as usize + image_def.type_count as usize;
-            for type_def_index in image_def.type_start as usize..type_end {
-                let type_def = metadata.type_defs[type_def_index].clone();
-                let struct_type_name = match struct_name_dic.get(&type_def_index) {
+        let method_info_chunks: Vec<Vec<(u64, String)>> = method_info_jobs
+            .par_iter()
+            .map(|(type_def_index, image_name)| {
+                let struct_type_name = match struct_name_dic.get(type_def_index) {
                     Some(n) => n.clone(),
-                    None => continue,
+                    None => return Vec::new(),
                 };
+                let type_def = &metadata.type_defs[*type_def_index];
+                let mut local_exec = Il2CppExecutor::new_for_worker(executor);
+                let mut local = Vec::new();
                 let method_end = type_def.method_start as usize + type_def.method_count as usize;
                 for method_index in type_def.method_start as usize..method_end {
                     let method_def = metadata.method_defs[method_index].clone();
-                    if let Some(spec_indices) = il2cpp.method_definition_method_specs.get(&method_index).cloned() {
-                        for spec_idx in &spec_indices {
-                            if *spec_idx >= il2cpp.method_specs.len() { continue; }
-                            let _method_spec = il2cpp.method_specs[*spec_idx].clone();
-                            // Note: do NOT filter on method_index_index < 0 here.
-                            // C# generates MethodInfo for ALL method specs with genericMethodPointer > 0,
-                            // including those with only class-level generics (method_index_index == -1).
-
-                            let generic_method_pointer = il2cpp.method_spec_generic_method_pointers.get(spec_idx).copied().unwrap_or(0);
-                            if generic_method_pointer == 0 { continue; }
-                            let method_info_rva = il2cpp.get_rva(generic_method_pointer);
-                            let method_info_name = format!("MethodInfo_{:X}", method_info_rva);
-
-                            let (_spec_type_name, _spec_method_name) = executor.get_method_spec_name(*spec_idx, metadata, il2cpp, true);
-
-                            let method_rgctxs = Self::collect_rgctx_info_for_method(
-                                executor, metadata, il2cpp, &image_name, &method_def,
-                            );
-                            if method_info_cache.insert(generic_method_pointer) {
-                                Self::generate_method_info(&mut method_info_header, &method_info_name, &struct_type_name, &method_rgctxs, il2cpp.version);
-                            }
+                    let Some(spec_indices) = il2cpp.method_definition_method_specs.get(&method_index) else {
+                        continue;
+                    };
+                    for spec_idx in spec_indices {
+                        if *spec_idx >= il2cpp.method_specs.len() {
+                            continue;
                         }
+                        // Note: do NOT filter on method_index_index < 0 here.
+                        // C# generates MethodInfo for ALL method specs with genericMethodPointer > 0,
+                        // including those with only class-level generics (method_index_index == -1).
+                        let generic_method_pointer = il2cpp
+                            .method_spec_generic_method_pointers
+                            .get(spec_idx)
+                            .copied()
+                            .unwrap_or(0);
+                        if generic_method_pointer == 0 {
+                            continue;
+                        }
+                        let method_info_rva = il2cpp.get_rva(generic_method_pointer);
+                        let method_info_name = format!("MethodInfo_{:X}", method_info_rva);
+                        let method_rgctxs = Self::collect_rgctx_info_for_method(
+                            &mut local_exec,
+                            metadata,
+                            il2cpp,
+                            image_name,
+                            &method_def,
+                        );
+                        let mut frag = String::new();
+                        Self::generate_method_info(
+                            &mut frag,
+                            &method_info_name,
+                            &struct_type_name,
+                            &method_rgctxs,
+                            il2cpp.version,
+                        );
+                        local.push((generic_method_pointer, frag));
                     }
                 }
+                local
+            })
+            .collect();
+
+        let mut method_info_header = String::with_capacity(1 << 16);
+        let mut method_info_cache: HashSet<u64> = HashSet::new();
+        for chunk in method_info_chunks {
+            for (ptr, frag) in chunk {
+                if method_info_cache.insert(ptr) {
+                    method_info_header.push_str(&frag);
+                }
             }
+        }
+
+        let mut array_class_header = String::with_capacity(1 << 14);
+        for frag in array_classes.values() {
+            array_class_header.push_str(frag);
         }
 
         let mut buf = String::with_capacity(1 << 20);
@@ -1571,13 +1657,12 @@ impl StructGenerator {
 
     fn add_fields(
         executor: &mut Il2CppExecutor,
-        metadata: &mut Metadata,
-        il2cpp: &mut Il2Cpp,
+        metadata: &Metadata,
+        il2cpp: &Il2Cpp,
         type_def: &Il2CppTypeDefinition,
         struct_name_dic: &HashMap<usize, String>,
         info: &mut StructInfo,
-        array_class_header: &mut String,
-        array_class_set: &mut HashSet<String>,
+        array_classes: &mut HashMap<String, String>,
         context: Option<&Il2CppGenericContext>,
         mut hdr_ctx: Option<&mut HeaderGenCtx>,
     ) {
@@ -1598,8 +1683,18 @@ impl StructGenerator {
                     if let Some(element_type) = il2cpp.types.get(field_type.datapoint as usize).cloned() {
                         let elem_struct_name = Self::get_il2cpp_struct_name(&element_type, struct_name_dic, il2cpp, context);
                         let array_struct_name = format!("{}_array", elem_struct_name);
-                        if array_class_set.insert(array_struct_name) {
-                            Self::parse_array_class_struct(array_class_header, &element_type, struct_name_dic, executor, metadata, il2cpp, context);
+                        if !array_classes.contains_key(&array_struct_name) {
+                            let mut frag = String::new();
+                            Self::parse_array_class_struct(
+                                &mut frag,
+                                &element_type,
+                                struct_name_dic,
+                                executor,
+                                metadata,
+                                il2cpp,
+                                context,
+                            );
+                            array_classes.insert(array_struct_name, frag);
                         }
                     }
                 }
@@ -1763,7 +1858,7 @@ impl StructGenerator {
     }
 
     fn add_vtable_methods(
-        metadata: &mut Metadata,
+        metadata: &Metadata,
         il2cpp: &Il2Cpp,
         type_def: &Il2CppTypeDefinition,
         info: &mut StructInfo,
@@ -1818,8 +1913,8 @@ impl StructGenerator {
 
     fn add_rgctx(
         executor: &mut Il2CppExecutor,
-        metadata: &mut Metadata,
-        il2cpp: &mut Il2Cpp,
+        metadata: &Metadata,
+        il2cpp: &Il2Cpp,
         type_def: &Il2CppTypeDefinition,
         _type_index: usize,
         type_def_image_names: &HashMap<usize, String>,
@@ -2066,8 +2161,8 @@ impl StructGenerator {
 
     fn collect_rgctx_info_for_method(
         executor: &mut Il2CppExecutor,
-        metadata: &mut Metadata,
-        il2cpp: &mut Il2Cpp,
+        metadata: &Metadata,
+        il2cpp: &Il2Cpp,
         image_name: &str,
         method_def: &Il2CppMethodDefinition,
     ) -> Vec<StructRGCTXInfo> {

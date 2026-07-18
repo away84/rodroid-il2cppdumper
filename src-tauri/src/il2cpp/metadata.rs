@@ -155,17 +155,42 @@ impl Metadata {
         unity_version_str: Option<&str>,
         force_codm: bool,
     ) -> Result<Self> {
+        let file_len = data.len() as u64;
+        if file_len < 8 {
+            return Err(Error::InvalidMetadata(format!(
+                "File too small ({file_len} bytes). Expected global-metadata.dat (usually multi‑MB). \
+                 Check the path or re-extract from the APK/IPA."
+            )));
+        }
+
         let mut stream = BinaryStream::new(data);
         stream.set_position(0);
 
-        let sanity = stream.read_u32()?;
+        let sanity = stream
+            .read_u32()
+            .map_err(|e| e.with_metadata_context(file_len))?;
         if sanity != METADATA_MAGIC {
-            return Err(Error::InvalidMetadata("Wrong magic number".into()));
+            let b0 = (sanity & 0xFF) as u8;
+            let b1 = ((sanity >> 8) & 0xFF) as u8;
+            let b2 = ((sanity >> 16) & 0xFF) as u8;
+            let b3 = ((sanity >> 24) & 0xFF) as u8;
+            return Err(Error::InvalidMetadata(format!(
+                "Wrong magic number 0x{sanity:08X} (bytes {b0:02X} {b1:02X} {b2:02X} {b3:02X}). \
+                 Expected AF 1B B1 FA. This usually means the file is encrypted, obfuscated, \
+                 truncated, or not global-metadata.dat. Protected games often require dumping \
+                 decrypted metadata from memory at runtime."
+            )));
         }
 
-        let version_raw = stream.read_i32()?;
+        let version_raw = stream
+            .read_i32()
+            .map_err(|e| e.with_metadata_context(file_len))?;
         if version_raw < 0 || version_raw > 200 {
-            return Err(Error::InvalidMetadata("Invalid version".into()));
+            return Err(Error::InvalidMetadata(format!(
+                "Invalid metadata version field ({version_raw}). \
+                 Header looks corrupted — often encryption or a truncated file. \
+                 Valid files start with AF 1B B1 FA followed by a small version (16–106)."
+            )));
         }
         if version_raw < 16 {
             return Err(Error::UnsupportedVersion(version_raw));
@@ -213,9 +238,13 @@ impl Metadata {
 
         stream.set_position(0);
         let header = match variant {
-            MetadataVariant::Codm => Il2CppGlobalMetadataHeader::read_codm(&mut stream)?,
-            MetadataVariant::Standard => Il2CppGlobalMetadataHeader::read(&mut stream, version)?,
+            MetadataVariant::Codm => Il2CppGlobalMetadataHeader::read_codm(&mut stream)
+                .map_err(|e| e.with_metadata_context(file_len))?,
+            MetadataVariant::Standard => Il2CppGlobalMetadataHeader::read(&mut stream, version)
+                .map_err(|e| e.with_metadata_context(file_len))?,
         };
+
+        Self::validate_header_ranges(&header, file_len)?;
 
         let mut meta = Self {
             stream,
@@ -258,12 +287,66 @@ impl Metadata {
         };
 
         if meta.unity_version.is_none() && meta.variant != MetadataVariant::Codm {
-            meta.detect_subversion()?;
+            meta.detect_subversion()
+                .map_err(|e| e.with_metadata_context(file_len))?;
         }
         let widths = IndexWidths::from_header(&meta.header, meta.version);
         set_index_widths(widths);
-        meta.load_metadata()?;
+        meta.load_metadata()
+            .map_err(|e| e.with_metadata_context(file_len))?;
         Ok(meta)
+    }
+
+    /// Catch encrypted/garbage headers early: section offset+size must fit in the file.
+    fn validate_header_ranges(header: &Il2CppGlobalMetadataHeader, file_len: u64) -> Result<()> {
+        let sections: [(&str, i32, i32); 10] = [
+            ("string_literal", header.string_literal_offset, header.string_literal_size),
+            ("string", header.string_offset, header.string_size),
+            ("type_definitions", header.type_definitions_offset, header.type_definitions_size),
+            ("methods", header.methods_offset, header.methods_size),
+            ("fields", header.fields_offset, header.fields_size),
+            ("parameters", header.parameters_offset, header.parameters_size),
+            ("images", header.images_offset, header.images_size),
+            ("assemblies", header.assemblies_offset, header.assemblies_size),
+            ("properties", header.properties_offset, header.properties_size),
+            ("events", header.events_offset, header.events_size),
+        ];
+
+        let mut bad = Vec::new();
+        for (name, off, size) in sections {
+            if off < 0 || size < 0 {
+                bad.push(format!("{name}: negative offset/size (off={off}, size={size})"));
+                continue;
+            }
+            if size == 0 {
+                continue;
+            }
+            let off_u = off as u64;
+            let size_u = size as u64;
+            if off_u >= file_len {
+                bad.push(format!(
+                    "{name}: offset 0x{off_u:X} is past end of file ({file_len} bytes)"
+                ));
+            } else if off_u.saturating_add(size_u) > file_len {
+                bad.push(format!(
+                    "{name}: range 0x{off_u:X}+{size_u} exceeds file size {file_len}"
+                ));
+            } else if size_u > file_len {
+                bad.push(format!(
+                    "{name}: size {size_u} larger than entire file ({file_len})"
+                ));
+            }
+        }
+
+        if !bad.is_empty() {
+            let detail = bad.join("; ");
+            return Err(Error::InvalidMetadata(format!(
+                "Metadata header section ranges are invalid ({detail}). \
+                 This usually means encrypted/obfuscated global-metadata.dat or a truncated extract. \
+                 Valid files start with AF 1B B1 FA. Protected games often need a runtime memory dump."
+            )));
+        }
+        Ok(())
     }
 
     fn detect_subversion(&mut self) -> Result<()> {

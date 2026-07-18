@@ -338,12 +338,28 @@ impl BinaryStream {
         Ok(self.peek_u32_at(offset)? as i32)
     }
 
+    fn map_read_err(e: std::io::Error, pos: u64, size: usize) -> Error {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof
+            || e.to_string().contains("fill whole buffer")
+        {
+            Error::OutOfBounds { offset: pos, size }
+        } else {
+            Error::Io(e)
+        }
+    }
+
     pub fn read_u8(&mut self) -> Result<u8> {
-        self.cursor.read_u8().map_err(Error::Io)
+        let pos = self.cursor.position();
+        self.cursor
+            .read_u8()
+            .map_err(|e| Self::map_read_err(e, pos, 1))
     }
 
     pub fn read_i8(&mut self) -> Result<i8> {
-        self.cursor.read_i8().map_err(Error::Io)
+        let pos = self.cursor.position();
+        self.cursor
+            .read_i8()
+            .map_err(|e| Self::map_read_err(e, pos, 1))
     }
 
     pub fn read_bool(&mut self) -> Result<bool> {
@@ -351,66 +367,106 @@ impl BinaryStream {
     }
 
     pub fn read_u16(&mut self) -> Result<u16> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_u16::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_u16::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 2))
         } else {
-            self.cursor.read_u16::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_u16::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 2))
         }
     }
 
     pub fn read_i16(&mut self) -> Result<i16> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_i16::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_i16::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 2))
         } else {
-            self.cursor.read_i16::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_i16::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 2))
         }
     }
 
     pub fn read_u32(&mut self) -> Result<u32> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_u32::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_u32::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 4))
         } else {
-            self.cursor.read_u32::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_u32::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 4))
         }
     }
 
     pub fn read_i32(&mut self) -> Result<i32> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_i32::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_i32::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 4))
         } else {
-            self.cursor.read_i32::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_i32::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 4))
         }
     }
 
     pub fn read_u64(&mut self) -> Result<u64> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_u64::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_u64::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 8))
         } else {
-            self.cursor.read_u64::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_u64::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 8))
         }
     }
 
     pub fn read_i64(&mut self) -> Result<i64> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_i64::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_i64::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 8))
         } else {
-            self.cursor.read_i64::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_i64::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 8))
         }
     }
 
     pub fn read_f32(&mut self) -> Result<f32> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_f32::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_f32::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 4))
         } else {
-            self.cursor.read_f32::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_f32::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 4))
         }
     }
 
     pub fn read_f64(&mut self) -> Result<f64> {
+        let pos = self.cursor.position();
         if self.is_big_endian {
-            self.cursor.read_f64::<BigEndian>().map_err(Error::Io)
+            self.cursor
+                .read_f64::<BigEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 8))
         } else {
-            self.cursor.read_f64::<LittleEndian>().map_err(Error::Io)
+            self.cursor
+                .read_f64::<LittleEndian>()
+                .map_err(|e| Self::map_read_err(e, pos, 8))
         }
     }
 

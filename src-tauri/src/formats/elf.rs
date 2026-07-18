@@ -1508,43 +1508,58 @@ impl Elf {
     }
 
     pub fn auto_plus_init(&mut self, code_reg: Option<u64>, metadata_reg: Option<u64>) -> Result<bool> {
-        let mut code_registration = code_reg.unwrap_or(0);
+        let code_registration = code_reg.unwrap_or(0);
         let metadata_registration = metadata_reg.unwrap_or(0);
-        let version = self.stream.version;
-
-        if code_registration != 0 && version >= 24.2 {
-            let cr_offset = self.map_vatr(code_registration)?;
-            self.stream.set_position(cr_offset);
-            let cr = Il2CppCodeRegistration::read(&mut self.stream, version)?;
-            let limit = 0x50000u64;
-            let ptr_size = self.stream.pointer_size() as u64;
-
-            if version == 31.0 && cr.generic_method_pointers_count > limit {
-                code_registration -= ptr_size * 2;
-            } else if version == 29.0 && cr.generic_method_pointers_count > limit {
-                self.stream.version = 29.1;
-                code_registration -= ptr_size * 2;
-            } else if version == 27.0 && cr.reverse_pinvoke_wrapper_count > limit {
-                self.stream.version = 27.1;
-                code_registration -= ptr_size;
-            } else if version == 24.4 {
-                code_registration -= ptr_size * 2;
-                if cr.reverse_pinvoke_wrapper_count > limit {
-                    self.stream.version = 24.5;
-                    code_registration -= ptr_size;
-                }
-            } else if version == 24.2 && cr.interop_data_count == 0 {
-                self.stream.version = 24.3;
-                code_registration -= ptr_size * 2;
+        if code_registration == 0 || metadata_registration == 0 {
+            return Ok(false);
+        }
+        match self.init_with_auto_plus(code_registration, metadata_registration) {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                eprintln!(
+                    "[WARN] Registration init failed at CR=0x{code_registration:x} MR=0x{metadata_registration:x}: {e}"
+                );
+                Ok(false)
             }
         }
+    }
 
-        if code_registration != 0 && metadata_registration != 0 {
-            self.init(code_registration, metadata_registration)?;
-            return Ok(true);
+    pub fn init_with_auto_plus(
+        &mut self,
+        code_registration: u64,
+        metadata_registration: u64,
+    ) -> Result<()> {
+        let orig_version = self.stream.version;
+        let limit = crate::il2cpp::auto_plus_count_limit(false);
+        let cr = if code_registration != 0 && self.stream.version >= 24.2 {
+            match self.map_vatr(code_registration) {
+                Ok(cr_offset) => {
+                    self.stream.set_position(cr_offset);
+                    match Il2CppCodeRegistration::read(&mut self.stream, orig_version) {
+                        Ok(cr_struct) => crate::il2cpp::apply_auto_plus_heuristics(
+                            &mut self.stream,
+                            code_registration,
+                            &cr_struct,
+                            limit,
+                        ),
+                        Err(_) => code_registration,
+                    }
+                }
+                Err(_) => code_registration,
+            }
+        } else {
+            code_registration
+        };
+
+        match self.init(cr, metadata_registration) {
+            Ok(()) => Ok(()),
+            Err(e) if orig_version == 31.0 && self.stream.version != 29.0 => {
+                self.stream.version = 29.0;
+                eprintln!("Info: Retry init with il2cpp version 29 ({e})");
+                self.init(cr, metadata_registration)
+            }
+            Err(e) => Err(e),
         }
-
-        Ok(false)
     }
 
     /// ARM32 pattern search from __mod_init_func / executable segments.

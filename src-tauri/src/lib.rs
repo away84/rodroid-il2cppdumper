@@ -390,7 +390,7 @@ fn init_elf(
     }
 
     if force_cr != 0 && force_mr != 0 {
-        elf.init(force_cr, force_mr)?;
+        elf.init_with_auto_plus(force_cr, force_mr)?;
     } else {
         emit_log(app, "Searching...");
         let method_count = metadata
@@ -409,33 +409,37 @@ fn init_elf(
             helper.find_metadata_registration()
         };
 
-        if let Some(cr) = code_reg {
-            emit_log(app, &format!("CodeRegistration : 0x{cr:x}"));
-        }
-        if let Some(mr) = metadata_reg {
-            emit_log(app, &format!("MetadataRegistration : 0x{mr:x}"));
-        }
+        // Log CR/MR only once — after the strategy that actually succeeds.
+        let mut found = false;
+        let mut final_cr: Option<u64> = None;
+        let mut final_mr: Option<u64> = None;
+        let mut how = "";
 
-        let mut found = elf.auto_plus_init(code_reg, metadata_reg).unwrap_or(false);
+        if elf.auto_plus_init(code_reg, metadata_reg).unwrap_or(false) {
+            found = true;
+            final_cr = code_reg;
+            final_mr = metadata_reg;
+            how = "Section scan";
+        }
 
         if !found {
             if let Ok(Some((cr, mr))) = elf.symbol_search() {
-                emit_log(app, "Detected Symbol!");
-                emit_log(app, &format!("CodeRegistration : 0x{cr:x}"));
-                emit_log(app, &format!("MetadataRegistration : 0x{mr:x}"));
-                if elf.init(cr, mr).is_ok() {
+                if elf.init_with_auto_plus(cr, mr).is_ok() {
                     found = true;
+                    final_cr = Some(cr);
+                    final_mr = Some(mr);
+                    how = "Symbol table";
                 }
             }
         }
 
         if !found {
             if let Some((cr, mr)) = elf.search_arm32(version) {
-                emit_log(app, "Found via ARM32 Search");
-                emit_log(app, &format!("CodeRegistration : 0x{cr:x}"));
-                emit_log(app, &format!("MetadataRegistration : 0x{mr:x}"));
-                if elf.init(cr, mr).is_ok() {
+                if elf.init_with_auto_plus(cr, mr).is_ok() {
                     found = true;
+                    final_cr = Some(cr);
+                    final_mr = Some(mr);
+                    how = "ARM32 search pattern";
                 }
             }
         }
@@ -445,9 +449,19 @@ fn init_elf(
             if let Some((cr, mr)) = prompt_manual_addresses(app, state) {
                 emit_log(app, &format!("CodeRegistration : 0x{cr:x}"));
                 emit_log(app, &format!("MetadataRegistration : 0x{mr:x}"));
-                elf.init(cr, mr)?;
+                elf.init_with_auto_plus(cr, mr)?;
             } else {
                 return Err(error::Error::Other("Manual mode cancelled.".into()));
+            }
+        } else {
+            if !how.is_empty() {
+                emit_log(app, &format!("Found via {how}"));
+            }
+            if let Some(cr) = final_cr {
+                emit_log(app, &format!("CodeRegistration : 0x{cr:x}"));
+            }
+            if let Some(mr) = final_mr {
+                emit_log(app, &format!("MetadataRegistration : 0x{mr:x}"));
             }
         }
     }
@@ -587,7 +601,7 @@ fn init_pe(
     } else {
         crate::disassembler::Architecture::X64
     });
-    il2cpp.init(cr_addr, mr_addr, &|addr| pe.map_vatr(addr))?;
+    il2cpp.init_with_auto_plus(cr_addr, mr_addr, &|addr| pe.map_vatr(addr), false)?;
     il2cpp.data_sections = pe.data_search_sections();
     if let Ok(exports) = pe.list_exported_symbols() {
         il2cpp.exported_symbols = exports.iter().map(|(n, _)| n.clone()).collect();
@@ -669,6 +683,7 @@ fn init_macho(
         metadata.version
     };
     macho.stream.version = version;
+    macho.stream.is_32bit = macho.is_32bit;
     emit_log(app, &format!("IL2CPP Version: {version}"));
 
     if macho.check_dump() {
@@ -763,7 +778,7 @@ fn init_macho(
         let mut il2cpp = Il2Cpp::new(macho.stream.clone(), version, macho.is_32bit);
         il2cpp.va_segments = va_segments.clone();
         il2cpp.codm = resolve_codm(config, metadata);
-        il2cpp.init(cr, mr, &|addr| macho.map_vatr(addr))?;
+        il2cpp.init_with_auto_plus(cr, mr, &|addr| macho.map_vatr(addr), false)?;
         Ok(il2cpp)
     };
 
@@ -839,6 +854,8 @@ fn init_nso(
     } else {
         metadata.version
     };
+    nso.stream.version = version;
+    nso.stream.is_32bit = nso.is_32bit;
     emit_log(app, &format!("IL2CPP Version: {version}"));
 
     if nso.check_dump() {
@@ -901,7 +918,7 @@ fn init_nso(
         offset: 0,
     }];
     il2cpp.codm = resolve_codm(config, metadata);
-    il2cpp.init(cr_addr, mr_addr, &|addr| nso.map_vatr(addr))?;
+    il2cpp.init_with_auto_plus(cr_addr, mr_addr, &|addr| nso.map_vatr(addr), false)?;
     il2cpp.data_sections = nso.data_search_sections();
 
     if let Ok(nso_exports) = nso.list_exported_symbols() {
@@ -939,6 +956,8 @@ fn init_wasm(
     } else {
         metadata.version
     };
+    wasm.stream.version = version;
+    wasm.stream.is_32bit = wasm.is_32bit;
     emit_log(app, &format!("IL2CPP Version: {version}"));
 
     if wasm.check_dump() {
@@ -1001,7 +1020,7 @@ fn init_wasm(
         offset: 0,
     }];
     il2cpp.codm = resolve_codm(config, metadata);
-    il2cpp.init(cr_addr, mr_addr, &|addr| wasm.map_vatr(addr))?;
+    il2cpp.init_with_auto_plus(cr_addr, mr_addr, &|addr| wasm.map_vatr(addr), true)?;
     il2cpp.data_sections = wasm.data_search_sections();
     Ok(il2cpp)
 }
@@ -1046,8 +1065,15 @@ fn run_dump(
                 &format!("Encrypted metadata detected ({scheme}), decrypting..."),
             ),
             None => {
+                let b0 = (metadata_magic & 0xFF) as u8;
+                let b1 = ((metadata_magic >> 8) & 0xFF) as u8;
+                let b2 = ((metadata_magic >> 16) & 0xFF) as u8;
+                let b3 = ((metadata_magic >> 24) & 0xFF) as u8;
                 return Err(format!(
-                    "Invalid metadata file (magic: 0x{metadata_magic:08X}). Encryption not recognized."
+                    "Metadata error: wrong magic 0x{metadata_magic:08X} \
+                     (bytes {b0:02X} {b1:02X} {b2:02X} {b3:02X}). Expected AF 1B B1 FA. \
+                     File is likely encrypted, obfuscated, truncated, or not global-metadata.dat. \
+                     Protected games often need a runtime memory dump of decrypted metadata."
                 ));
             }
         }
@@ -1058,7 +1084,7 @@ fn run_dump(
         unity_version_str.as_deref(),
         config.codm,
     )
-    .map_err(|e| format!("Failed to parse metadata: {e}"))?;
+    .map_err(|e| e.user_message())?;
     emit_log(app, &format!("Metadata Version: {}", metadata.version));
 
     let format_name = detect_format(&il2cpp_bytes);

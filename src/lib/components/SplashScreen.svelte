@@ -61,7 +61,7 @@
       style:transform="scale({versionVisible ? 1 : 0.8})"
     >
       <ChipSet>
-        <AssistChip label="v6.5" />
+        <AssistChip label="v7.0" />
       </ChipSet>
     </div>
   </div>

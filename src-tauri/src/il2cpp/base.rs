@@ -5,6 +5,75 @@ use crate::search::SearchSection;
 use crate::disassembler::Architecture;
 use super::structures::*;
 
+pub fn auto_plus_count_limit(is_wasm: bool) -> u64 {
+    if is_wasm { 0x35000 } else { 0x50000 }
+}
+
+pub fn apply_auto_plus_heuristics(
+    stream: &mut BinaryStream,
+    mut code_registration: u64,
+    cr: &Il2CppCodeRegistration,
+    count_limit: u64,
+) -> u64 {
+    if code_registration == 0 || stream.version < 24.2 {
+        return code_registration;
+    }
+    let ptr_size = stream.pointer_size() as u64;
+
+    if stream.version == 31.0 {
+        if cr.generic_method_pointers_count > count_limit {
+            code_registration = code_registration.saturating_sub(ptr_size * 2);
+        } else {
+            stream.version = 29.0;
+            eprintln!("Info: Change il2cpp version to: 29");
+        }
+    }
+    if stream.version == 29.0 {
+        if cr.generic_method_pointers_count > count_limit {
+            stream.version = 29.1;
+            code_registration = code_registration.saturating_sub(ptr_size * 2);
+            eprintln!("Info: Change il2cpp version to: 29.1");
+        }
+    }
+    if stream.version == 27.0 {
+        if cr.reverse_pinvoke_wrapper_count > count_limit {
+            stream.version = 27.1;
+            code_registration = code_registration.saturating_sub(ptr_size);
+            eprintln!("Info: Change il2cpp version to: 27.1");
+        }
+    }
+    if stream.version == 24.4 {
+        code_registration = code_registration.saturating_sub(ptr_size * 2);
+        if cr.reverse_pinvoke_wrapper_count > count_limit {
+            stream.version = 24.5;
+            code_registration = code_registration.saturating_sub(ptr_size);
+            eprintln!("Info: Change il2cpp version to: 24.5");
+        }
+    }
+    if stream.version == 24.2 && cr.interop_data_count == 0 {
+        stream.version = 24.3;
+        code_registration = code_registration.saturating_sub(ptr_size * 2);
+        eprintln!("Info: Change il2cpp version to: 24.3");
+    }
+    code_registration
+}
+
+pub fn refine_code_registration(
+    stream: &mut BinaryStream,
+    code_registration: u64,
+    map_vatr: &dyn Fn(u64) -> Result<u64>,
+    count_limit: u64,
+) -> Result<u64> {
+    if code_registration == 0 || stream.version < 24.2 {
+        return Ok(code_registration);
+    }
+    let cr_offset = map_vatr(code_registration)?;
+    stream.set_position(cr_offset);
+    let version = stream.version;
+    let cr = Il2CppCodeRegistration::read(stream, version)?;
+    Ok(apply_auto_plus_heuristics(stream, code_registration, &cr, count_limit))
+}
+
 #[derive(Debug, Clone)]
 pub struct VaSegment {
     pub vaddr: u64,
@@ -59,7 +128,9 @@ pub struct Il2Cpp {
 }
 
 impl Il2Cpp {
-    pub fn new(stream: BinaryStream, version: f64, is_32bit: bool) -> Self {
+    pub fn new(mut stream: BinaryStream, version: f64, is_32bit: bool) -> Self {
+        stream.version = version;
+        stream.is_32bit = is_32bit;
         Self {
             stream,
             version,
@@ -159,6 +230,38 @@ impl Il2Cpp {
         }
     }
 
+    pub fn init_with_auto_plus(
+        &mut self,
+        code_registration: u64,
+        metadata_registration: u64,
+        map_vatr: &dyn Fn(u64) -> Result<u64>,
+        is_wasm: bool,
+    ) -> Result<()> {
+        let orig_version = self.stream.version;
+        let limit = auto_plus_count_limit(is_wasm);
+        let cr = match refine_code_registration(
+            &mut self.stream,
+            code_registration,
+            map_vatr,
+            limit,
+        ) {
+            Ok(c) => c,
+            Err(_) => code_registration,
+        };
+        self.version = self.stream.version;
+
+        match self.init(cr, metadata_registration, map_vatr) {
+            Ok(()) => Ok(()),
+            Err(e) if orig_version == 31.0 && self.stream.version != 29.0 => {
+                self.stream.version = 29.0;
+                self.version = 29.0;
+                eprintln!("Info: Retry init with il2cpp version 29 ({e})");
+                self.init(cr, metadata_registration, map_vatr)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn init(
         &mut self,
         code_registration: u64,
@@ -168,6 +271,7 @@ impl Il2Cpp {
         self.code_registration = code_registration;
         self.metadata_registration = metadata_registration;
         self.stream.is_32bit = self.is_32bit;
+        self.version = self.stream.version;
 
 
         let mr_offset = map_vatr(metadata_registration)?;

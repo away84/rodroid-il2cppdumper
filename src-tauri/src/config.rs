@@ -42,7 +42,9 @@ pub struct Config {
     pub compiler_layout: String,
     pub use_topological_sort: bool,
     pub codm: bool,
+    /// Thread-static fields, FieldRVA blobs, and `static_metadata.json` export.
     pub dump_static_field_metadata: bool,
+    /// Include hex/metadata for FieldRVA (`PrivateImplementationDetails`) entries.
     pub dump_field_rva_data: bool,
     pub max_field_rva_dump_bytes: usize,
 }
