@@ -10,7 +10,7 @@
     channel1: "https://t.me/+WmudnO0-xoNhMDQ8",
     channel2: "https://t.me/+WLLFw3pr-aVmMjBk",
     group: "https://t.me/+QylrYL1GNsJiYjc0",
-    bugs: "https://t.me/rodroidmods",
+    bugs: "https://t.me/rodroidbugreporter_bot",
   };
 
   async function openUrl(url: string) {
@@ -146,7 +146,7 @@
             {/snippet}
             {$t.about_report_bugs}
             {#snippet supportingText()}
-              @rodroidmods
+              @rodroidbugreporter_bot
             {/snippet}
             {#snippet end()}
               <ArrowForwardIcon />
