@@ -20,6 +20,9 @@
 </p>
 
 ---
+## ✨ What's New in V7
+
+- **Added support for multithreading, better errors, and also bugs fixes, for more infromation check the official il2cppdumper cli responsity**
 
 ## ✨ What's New in V6.1
 
