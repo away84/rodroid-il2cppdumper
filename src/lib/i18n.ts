@@ -1,6 +1,6 @@
 export type ThemeMode = "system" | "light" | "dark";
 
-export type AppLanguage = "en" | "sq" | "hi" | "id" | "jv" | "es" | "ar";
+export type AppLanguage = "en" | "sq" | "zh" | "hi" | "id" | "jv" | "es" | "ar";
 
 export interface LanguageInfo {
   code: AppLanguage;
@@ -10,6 +10,7 @@ export interface LanguageInfo {
 export const LANGUAGES: LanguageInfo[] = [
   { code: "en", displayName: "English" },
   { code: "sq", displayName: "Shqip" },
+  { code: "zh", displayName: "中文" },
   { code: "hi", displayName: "Hindi" },
   { code: "id", displayName: "Bahasa Indonesia" },
   { code: "jv", displayName: "Basa Jawa" },
@@ -363,7 +364,70 @@ const jv: TranslationKeys = { ...en,
   setting_compiler_layout: "Tata Letak Kompiler", layout_gcc: "GCC", layout_msvc: "MSVC",
 };
 
-const translations: Record<AppLanguage, TranslationKeys> = { en, sq, ar, es, hi, id, jv };
+const zh: TranslationKeys = {
+  app_name: "Rodroid IL2CPP Dumper", settings: "设置", label_about: "关于",
+  select_binary: "选择二进制文件", select_metadata: "选择 global-metadata.dat",
+  start_dump: "开始转储", new_dump: "新建转储", try_again: "重试", dump_again: "再次转储",
+  dump_options: "转储选项",
+  label_binary: "IL2CPP 二进制文件", label_metadata: "元数据文件", label_log: "日志",
+  label_output: "输出", label_generation: "生成选项",
+  label_advanced_generics: "高级泛型转储", label_advanced: "高级选项",
+  label_format: "格式", label_unity: "Unity",
+  label_appearance: "外观", label_theme: "主题", label_language: "语言",
+  label_output_dir: "输出目录", setting_output_dir_desc: "转储结果的保存路径",
+  output_reset: "恢复默认",
+  status_processing: "处理中", dump_complete: "转储完成", dump_failed: "转储失败",
+  theme_system: "跟随系统", theme_light: "浅色", theme_dark: "深色",
+  setting_dump_method: "导出方法", setting_dump_field: "导出字段",
+  setting_dump_property: "导出属性", setting_dump_attribute: "导出特性",
+  setting_dump_method_offset: "方法偏移", setting_dump_field_offset: "字段偏移",
+  setting_dump_typedef_index: "TypeDef 索引", setting_dump_assembly_name: "程序集名称",
+  setting_generate_struct: "生成结构体", setting_generate_dummy_dll: "生成 Dummy DLL",
+  setting_dummy_dll_add_token: "Dummy DLL 包含 Token", setting_split_dump_per_type: "按类型拆分输出",
+  setting_generate_generics_dump: "生成泛型转储",
+  setting_dump_generics_rgctx: "导出 RGCTX",
+  setting_dump_generics_method_specs: "导出 MethodSpecs",
+  setting_dump_generics_custom_attributes: "导出自定义特性",
+  setting_dump_generics_string_literals: "导出字符串字面量",
+  setting_dump_generics_metadata_usages: "导出元数据引用",
+  setting_dump_generics_vtables: "导出虚函数表",
+  setting_dump_generics_interfaces: "导出接口",
+  setting_codm: "强制使用 CODM 元数据变体",
+  label_static_metadata: "静态字段元数据",
+  setting_dump_static_metadata: "导出 Thread-Static / FieldRVA",
+  setting_dump_field_rva_data: "包含 FieldRVA 十六进制数据",
+  setting_max_field_rva_dump_bytes: "FieldRVA 最大导出字节数",
+  setting_force_il2cpp_version: "强制指定 IL2CPP 版本", setting_force_version_label: "IL2CPP 版本",
+  setting_force_dump: "强制转储", setting_no_redirected_pointer: "禁用重定向指针",
+  label_disassembly: "反汇编", setting_dump_disassembly: "启用反汇编",
+  setting_dump_disassembly_target: "输出目标",
+  dialog_ok: "确定", dialog_cancel: "取消",
+  setting_dump_disassembly_hex_bytes: "十六进制字节",
+  setting_dump_disassembly_field_names: "字段名称",
+  setting_dump_disassembly_annotations: "注释",
+  setting_dump_disassembly_cfg: "控制流图分析",
+  setting_max_disassembly_instructions: "最大指令数",
+  dialog_dump_address_title: "检测到转储文件",
+  dialog_dump_address_desc: "请输入 IL2CPP 转储地址，或跳过以继续。",
+  dialog_skip: "跳过", dialog_manual_title: "手动模式",
+  dialog_manual_desc: "自动检测失败。请手动输入 CodeRegistration 和 MetadataRegistration 地址。",
+  setting_code_registration: "CodeRegistration (hex)",
+  setting_metadata_registration: "MetadataRegistration (hex)",
+  about_version: "v7.0", about_description: "Unity 游戏 IL2CPP 二进制转储工具 — 基于 Rust 构建",
+  about_developer: "开发者", about_powered_by: "基于 Rust 构建 🦀",
+  about_community: "社区",
+  about_channel_1: "Telegram 频道", about_channel_1_desc: "更新与发布",
+  about_channel_2: "Telegram 频道 2", about_channel_2_desc: "额外内容与新闻",
+  about_group: "Telegram 群组", about_group_desc: "社区交流与技术支持",
+  about_report_bugs: "反馈问题",
+  target_both: "全部", target_dump_cs: "dump.cs", target_diffable_cs: "DiffableCs",
+  label_cpp_headers: "C++ 头文件", setting_generate_cpp_scaffold: "生成 C++ 脚手架代码",
+  setting_mangle_names: "名称修饰", setting_enhanced_ida_metadata: "增强 IDA 元数据",
+  setting_generate_unity_headers: "生成 Unity 头文件", setting_use_topological_sort: "拓扑排序",
+  setting_compiler_layout: "编译器布局", layout_gcc: "GCC", layout_msvc: "MSVC",
+};
+
+const translations: Record<AppLanguage, TranslationKeys> = { en, sq, zh, ar, es, hi, id, jv };
 
 export function getTranslations(lang: AppLanguage): TranslationKeys {
   return translations[lang] || en;
